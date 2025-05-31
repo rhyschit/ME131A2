@@ -7,15 +7,30 @@
 #include <mutex>
 #include <condition_variable>
 #include <atomic>
+#include <iostream>
+#include <semaphore>
+#include <vector>
+
+
 
 #define SAMPLE_RATE 44100
 #define FRAMES_PER_BUFFER 256
+#define RING_SIZE 5
 #define NUM_CHANNELS 1
 #define SAMPLE_TYPE paFloat32
 typedef float SAMPLE;
 
 PaError err;
-SAMPLE buffer[FRAMES_PER_BUFFER];
+SAMPLE audioQueue[FRAMES_PER_BUFFER];
+std::vector<SAMPLE*> inputVec;
+std::vector<SAMPLE*> outputVec;
+
+std::binary_semaphore sem_audioQueue_empty(1); // Starts as empty
+std::binary_semaphore sem_audioQueue_full(0);  // Starts as not full
+
+
+
+
 //make a ring buffercalled audio ringOfBuffers to hold 5 buffers of audio data. It should have a head and a tail pointer, and a mutex to protect it. Each elemen in the ring buffer is a 256 long audio buffer of type SAMPLE.
 std::mutex audioMutex;
 std::condition_variable audioCondition;
@@ -90,3 +105,8 @@ error:
     Pa_Terminate();
     return -1;
 }
+
+
+
+
+
