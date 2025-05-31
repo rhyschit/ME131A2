@@ -9,6 +9,8 @@
         "-g",
         "main.cpp",
         "smbPitchShift.cpp",
+        "CountingSemaphore.cpp",
+        "RingBuffer.cpp",
         "-lportaudio",
         "-o",
         "${fileDirname}\\main_program.exe"

@@ -2,6 +2,8 @@
 #include <stdlib.h>
 #include "portaudio.h"
 #include "smbPitchShift.h"
+#include "CountingSemaphore.h"
+#include "RingBuffer.h"
 #include <thread>
 #include <queue>
 #include <mutex>
@@ -11,8 +13,6 @@
 #include <semaphore>
 #include <vector>
 
-
-
 #define SAMPLE_RATE 44100
 #define FRAMES_PER_BUFFER 256
 #define RING_SIZE 5
@@ -21,53 +21,35 @@
 typedef float SAMPLE;
 
 PaError err;
-
-//GENERAL NOTES
-//Should try use semaphore try_acquire instead of acquire, as this will not block the thread if the semaphore is not available, and will return false instead.
-
-SAMPLE* audioQueue = new SAMPLE[FRAMES_PER_BUFFER]; // Temporary buffer for processing
+std::atomic<bool> running = true;
+RingBuffer audioQueue(5);
 
 std::vector<SAMPLE*> inputVec;
 std::vector<SAMPLE*> outputVec;
 
-std::binary_semaphore sem_audioQueue_is_empty(1); // Starts as empty
-std::binary_semaphore sem_audioQueue_is_full(0);  // Starts as not full
+CountingSemaphore empty(5); // 5 empty slots
+CountingSemaphore full(0);  // 0 full slots
 
-
-
-
-
-
-
-
-// input function, for input thread. reads from the microphone and writes to the buffer, and when buffer full, writes this to audioqueue
-
-// output function, for output thread. reads from audioqueue, modifies this buffer, and writes to the speaker
-
-// main function, initializes portaudio, opens a stream, and starts the stream, initialises threads, and starts the threads, 
 
 void InputFunction(PaStream* stream) {
-    while(true){
+  
+  while(running) {
+    SAMPLE* newBuffer = new SAMPLE[FRAMES_PER_BUFFER];
 
-        SAMPLE* newBuffer = new SAMPLE[FRAMES_PER_BUFFER];
+    err = Pa_ReadStream(stream, newBuffer, FRAMES_PER_BUFFER);
+    if (err && err != paInputOverflowed) goto error;
 
-        // PaError err;
-        err = Pa_ReadStream(stream, newBuffer, FRAMES_PER_BUFFER);
-        if (err && err != paInputOverflowed) goto error;
-        //Write the pointer to the head of buffer to the inputVec
-
-        inputVec.push_back(newBuffer);
-
-        if (inputVec.size() > 0) {
-            // Wait until the audio queue is not full
-            sem_audioQueue_is_empty.acquire();   
-
-            // Add the new buffer to the audio queue
-            audioQueue = inputVec.front(); // Get the first element from inputVec
-            sem_audioQueue_is_full.release(); // Signal that the audio queue is not empty
-            inputVec.erase(inputVec.begin()); // Remove the first element from inputVec
-        }
+    empty.acquire(); //wait for a empty slot
+    if (!audioQueue.push(newBuffer)) {
+      std::cerr << "Push failed unexpectedly!" << std::endl;
+      delete[] newBuffer;
+    } else {
+      full.release();
     }
+  }
+
+  error:
+  fprintf(stderr, "An input error occurred: %s\n", Pa_GetErrorText(err));
 }
 
 void OutputFunction(PaStream* stream) {
@@ -87,36 +69,30 @@ void OutputFunction(PaStream* stream) {
     //Remember to delete the buffer after use, to avoid memory leaks
     //Remember to release the semaphore when done with the audio queue
 
-    while (true) {
-        sem_audioQueue_is_full.acquire(); // Wait until the audio queue is not empty
-
-        if (audioQueue != nullptr) { //Check audioqueue has a value in
-            SAMPLE* tempBuffer = new SAMPLE[FRAMES_PER_BUFFER]; // Temporary buffer for processing
-            tempBuffer = audioQueue; // Get the buffer from the audio queue
-            audioQueue = nullptr; // Clear the audio queue pointer
-            sem_audioQueue_is_empty.release(); // Signal that the audio queue is empty
-
-            // Apply pitch shift to the buffer
-            smbPitchShift(0.75, FRAMES_PER_BUFFER, 2048, 8, SAMPLE_RATE, tempBuffer, tempBuffer);
-
-            //Write tempbfuffer into the output vector
-            outputVec.push_back(tempBuffer); // Add the processed buffer to the output vector
+    while (running) {
+        full.acquire();   // Wait for full slot
+        SAMPLE* tempBuffer = nullptr;
+        if (!audioQueue.pop(tempBuffer)) {
+          std::cerr << "Pop failed unexpectedly!" << std::endl;
+          empty.release();  // Prevent deadlock
+          continue;
         }
 
-            // Write the modified buffer to the output stream
-            err = Pa_WriteStream(stream, outputVect.front(), FRAMES_PER_BUFFER);
-            if (err && err != paOutputUnderflowed) goto error;
+        // Apply pitch shift to the buffer
+        smbPitchShift(0.75, FRAMES_PER_BUFFER, 2048, 8, SAMPLE_RATE, tempBuffer, tempBuffer);
 
-             // Free the memory allocated for the buffer
-            delete[] outputVec.front(); // Delete the first element from outputVec
-            outputVec.erase(outputVec.begin()); // Remove the first element from outputVec --do we need to delete AND erase?
+
+        // Write the modified buffer to the output stream
+        err = Pa_WriteStream(stream, tempBuffer, FRAMES_PER_BUFFER);
+        if (err && err != paOutputUnderflowed) goto error;
+
     }
+    error:
+    fprintf(stderr, "An output error occurred: %s\n", Pa_GetErrorText(err));
 }
 
 int main(void) {
-    PaStream *stream;
-    // PaError err;
-    // SAMPLE buffer[FRAMES_PER_BUFFER];
+    PaStream *stream = nullptr;
 
     err = Pa_Initialize();
     if (err != paNoError) goto error;
@@ -132,29 +108,24 @@ int main(void) {
     err = Pa_StartStream(stream);
     if (err != paNoError) goto error;
 
-    std::thread inputThread(InputFunction, stream);
-    std::thread outputThread(OutputFunction, stream);
+    {
+      //threads ar ein a new scope, so goto won't cross initialisation...
+      std::thread inputThread(InputFunction, stream);
+      std::thread outputThread(OutputFunction, stream);
 
-    
+      printf("...\n");
+      while (running) {
+        asm("nop");
+      }
 
-    // printf("Audio passthrough started. Speak into the mic...\n");
-    // while (1) {
-    //     err = Pa_ReadStream(stream, buffer, FRAMES_PER_BUFFER);
-    //     if (err && err != paInputOverflowed) goto error;
+      Pa_StopStream(stream);
+      Pa_CloseStream(stream);
+      Pa_Terminate();
 
-    //     // Optional: apply pitch shift here
-    //     //pitch shifter will edit the contents of the buffer before output. 
-    //     smbPitchShift(0.75, FRAMES_PER_BUFFER, 2048, 8, SAMPLE_RATE, buffer, buffer);
-        
-
-    //     err = Pa_WriteStream(stream, buffer, FRAMES_PER_BUFFER);
-    //     if (err && err != paOutputUnderflowed) goto error;
-    // }
-
-    Pa_StopStream(stream);
-    Pa_CloseStream(stream);
-    Pa_Terminate();
-    return 0;
+      inputThread.join();
+      outputThread.join();
+      return 0;
+    }
 
 error:
     fprintf(stderr, "An error occurred: %s\n", Pa_GetErrorText(err));
