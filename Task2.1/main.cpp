@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <iostream>
 #include "portaudio.h"
 #include "smbPitchShift.h"
 
@@ -13,6 +14,8 @@ int main(void) {
     PaStream *stream;
     PaError err;
     SAMPLE buffer[FRAMES_PER_BUFFER];
+
+    setvbuf(stdout, NULL, _IONBF, 0);
 
     err = Pa_Initialize();
     if (err != paNoError) goto error;
@@ -28,13 +31,20 @@ int main(void) {
     err = Pa_StartStream(stream);
     if (err != paNoError) goto error;
 
-    printf("Audio passthrough started. Speak into the mic...\n");
+    printf("Audio passthrough started. Speak ...\n");
     while (1) {
         err = Pa_ReadStream(stream, buffer, FRAMES_PER_BUFFER);
         if (err && err != paInputOverflowed) goto error;
 
-        // Optional: apply pitch shift here
-        //pitch shifter will edit the contents of the buffer before output. 
+        static int count = 0;
+        if (++count % 100 == 0) {
+          std::cout << "First 5 samples: ";
+          for (int i = 0; i < 5; ++i)
+            std::cout << buffer[i] << " ";
+            std::cout << std::endl << std::flush;
+        }
+
+
         smbPitchShift(0.75, FRAMES_PER_BUFFER, 2048, 8, SAMPLE_RATE, buffer, buffer);
         
 

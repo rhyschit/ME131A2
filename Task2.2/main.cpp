@@ -1,9 +1,5 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include "portaudio.h"
-#include "smbPitchShift.h"
-#include "CountingSemaphore.h"
-#include "RingBuffer.h"
 #include <thread>
 #include <queue>
 #include <mutex>
@@ -12,6 +8,11 @@
 #include <iostream>
 #include <semaphore>
 #include <vector>
+
+#include "portaudio.h"
+#include "smbPitchShift.h"
+#include "CountingSemaphore.h"
+#include "RingBuffer.h"
 
 #define SAMPLE_RATE 44100
 #define FRAMES_PER_BUFFER 256
@@ -38,6 +39,8 @@ void InputFunction(PaStream* stream) {
 
     err = Pa_ReadStream(stream, newBuffer, FRAMES_PER_BUFFER);
     if (err && err != paInputOverflowed) goto error;
+    std::cout << "First sample before shift: " << newBuffer[0] << std::endl;
+
 
     empty.acquire(); //wait for a empty slot
     if (!audioQueue.push(newBuffer)) {
@@ -47,7 +50,6 @@ void InputFunction(PaStream* stream) {
       full.release();
     }
   }
-
   error:
   fprintf(stderr, "An input error occurred: %s\n", Pa_GetErrorText(err));
 }
@@ -72,6 +74,8 @@ void OutputFunction(PaStream* stream) {
     while (running) {
         full.acquire();   // Wait for full slot
         SAMPLE* tempBuffer = nullptr;
+        
+        
         if (!audioQueue.pop(tempBuffer)) {
           std::cerr << "Pop failed unexpectedly!" << std::endl;
           empty.release();  // Prevent deadlock
@@ -79,6 +83,7 @@ void OutputFunction(PaStream* stream) {
         }
 
         // Apply pitch shift to the buffer
+        printf("pitch shifting");
         smbPitchShift(0.75, FRAMES_PER_BUFFER, 2048, 8, SAMPLE_RATE, tempBuffer, tempBuffer);
 
 
