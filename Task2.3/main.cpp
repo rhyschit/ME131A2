@@ -31,61 +31,75 @@ std::vector<SAMPLE*> outputVec;
 CountingSemaphore empty(5); // 5 empty slots
 CountingSemaphore full(0);  // 0 full slots
 
+bool q = false;
+bool pitch_shifter_en = false;
+float pitch_shift_factor = 1;
+
+void UserFunction() {
+  while (running) {
+    char userInput;
+    std::cin >> userInput; 
+    
+    switch(userInput) {
+      case 'q':
+        q = true;
+        running = false;
+        full.release();  // unblock output thread
+        empty.release(); // unblock input thread
+        break;
+      case 's':
+        pitch_shifter_en = true;
+        break;
+      case 'p':
+        pitch_shifter_en = false;
+        break;
+      case 'u':
+        if (pitch_shifter_en && (pitch_shift_factor < 2)) {
+          pitch_shift_factor += 0.5;
+        }
+        break;
+      case 'd':
+        if (pitch_shifter_en && (pitch_shift_factor > 0.5)) {
+          pitch_shift_factor -= 0.5;
+        }        
+        break;
+      default:
+        std::cout << "Invalid option. Please enter q, s, p, u or d!" << std::endl;
+        break;
+    }
+    
+    
+    if (userInput == 'q') {
+      q == true;
+    }
+  }
+}
 
 void InputFunction(PaStream* stream) {
-  
   while(running) {
-    printf("entered input function \n");
     SAMPLE* newBuffer = new SAMPLE[FRAMES_PER_BUFFER];
-    // SAMPLE tryBuffer[FRAMES_PER_BUFFER];
 
     err = Pa_ReadStream(stream, newBuffer, FRAMES_PER_BUFFER);
-    if (err && err != paInputOverflowed) goto error;
-    std::cout << "First sample before shift: " << newBuffer[0] << std::endl;
-
-    // static int count = 0;
-    // if (++count % 100 == 1) {
-    //   std::cout << "First 5 samples: ";
-    //   for (int i = 0; i < 5; ++i)
-    //     std::cout << tryBuffer[i] << " ";
-    //     std::cout << std::endl << std::flush;
-    // }
-
+    if (err && err != paOutputUnderflowed) {
+      fprintf(stderr, "An input error occurred: %s\n", Pa_GetErrorText(err));
+      break;
+    }
 
     empty.acquire(); //wait for a empty slot
     if (!audioQueue.push(newBuffer)) {
-      std::cerr << "Push failed unexpectedly!" << std::endl;
       //delete[] newBuffer;
     } else {
-      printf("pushed - released full\n");
       full.release();
     }
+
   }
   error:
   fprintf(stderr, "An input error occurred: %s\n", Pa_GetErrorText(err));
 }
 
 void OutputFunction(PaStream* stream) {
-    //Thinkign about when pitch shift can take place, cannot be while reading from the audio queue, as then we will occupy the semaphore for the 
-    //duration of the pitch shift, and the input thread will not be able to write to the audio queue. Could be done so we grab audio data from outputvec
-    // and then pitch shift data, then call Pa_WriteStream to write the data to the output stream. This could cause some issue as write data is a blocking function
-    // until there is space in the internal buffer, are there any issues with this?
-    //Other option is to have a seperate buffer for the output thread, and then pitch shift the data in that buffer, and then write to the output stream.
-
-    //Outputfunction will only occur as fast as the output can write 256 samples, e.g every 5ms. This is because PAwritestream is a blocking function
-    // and will wait until there is space in the internal buffer. Any computation has to be complete in one cycle, as the function will only run once
-    //for every 256 samples.
-
-    //is it worth leaving Pa_writeStream outside of the if(audioQueue) block? could mean even if there is no data ready in time, it will still output
-    //something?? Even if it is re printing the last buffer
-
-    //Remember to delete the buffer after use, to avoid memory leaks
-    //Remember to release the semaphore when done with the audio queue
-
     while (running) {
-      printf("entered output function \n");
       full.acquire();   // Wait for full slot
-      printf("Acquired full \n");
       // SAMPLE* tempBuffer = nullptr;
       // SAMPLE* tempBuffer = new SAMPLE[FRAMES_PER_BUFFER];
       SAMPLE* tempBuffer = nullptr;
@@ -94,24 +108,22 @@ void OutputFunction(PaStream* stream) {
         std::cerr << "Pop failed unexpectedly!" << std::endl;
       }
       empty.release();  // Prevent deadlock
-      printf("Output released empty - pop succeeded");
-
-      // SAMPLE outBuffer[FRAMES_PER_BUFFER];
-      // std::copy(tempBuffer, tempBuffer + 256, outBuffer);
 
         // Apply pitch shift to the buffer
-      printf("pitch shifting");
-      smbPitchShift(0.75, FRAMES_PER_BUFFER, 2048, 8, SAMPLE_RATE, tempBuffer, tempBuffer);
-
+      if (pitch_shifter_en) {
+        smbPitchShift(pitch_shift_factor, FRAMES_PER_BUFFER, 2048, 8, SAMPLE_RATE, tempBuffer, tempBuffer);
+      }
 
       // Write the modified buffer to the output stream
       err = Pa_WriteStream(stream, tempBuffer, FRAMES_PER_BUFFER);
       delete[] tempBuffer;
-      if (err && err != paOutputUnderflowed) goto error;
+      if (err && err != paOutputUnderflowed) {
+        fprintf(stderr, "An output error occurred: %s\n", Pa_GetErrorText(err));
+        break;
+      }
+
 
     }
-    error:
-    fprintf(stderr, "An output error occurred: %s\n", Pa_GetErrorText(err));
 }
 
 int main(void) {
@@ -133,6 +145,7 @@ int main(void) {
 
     {
       //threads ar ein a new scope, so goto won't cross initialisation...
+      std::thread userThread(UserFunction);
       std::thread inputThread(InputFunction, stream);
       std::thread outputThread(OutputFunction, stream);
 
@@ -141,12 +154,17 @@ int main(void) {
         asm("nop");
       }
 
+      inputThread.join();
+
+      outputThread.join();
+      userThread.join();
+
+      
       Pa_StopStream(stream);
       Pa_CloseStream(stream);
       Pa_Terminate();
 
-      inputThread.join();
-      outputThread.join();
+      printf("the end");
       return 0;
     }
 
