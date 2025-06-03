@@ -43,7 +43,7 @@ int main(void) {
         if (err && err != paInputOverflowed) goto error;  // Allow non-fatal overflow
 
         // Apply pitch shifting on the buffer in-place
-        smbPitchShift(0.75,
+        smbPitchShift(2,
                       FRAMES_PER_BUFFER,
                       2048,
                       8,
