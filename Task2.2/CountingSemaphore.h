@@ -16,13 +16,13 @@ public:
     void release();
 
     // Deleted copy/move constructors and assignment for safety
-    CountingSemaphore(const CountingSemaphore&) = delete;
-    CountingSemaphore& operator=(const CountingSemaphore&) = delete;
+    CountingSemaphore(const CountingSemaphore&) = delete; // Prevents copying the semaphore using the copy constructor
+    CountingSemaphore& operator=(const CountingSemaphore&) = delete; // Prevents assigning one semaphore to another using the copy assignment operator
 
 private:
     std::mutex mtx_;
     std::condition_variable cv_;
-    int count_; // current number of permits
+    int count_; // Current number of permits
 };
 
-#endif // COUNTINGSEMAPHORE_H
+#endif
